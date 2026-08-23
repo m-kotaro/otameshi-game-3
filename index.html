@@ -777,7 +777,7 @@
         const dz = orb.position.z - ship.position.z;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-        if (dist < 2.5) {
+        if (dist < 4.5) {
           createExplosion(orb.position.clone(), 0x00ff88);
           scene.remove(orb);
           collectibles.splice(i, 1);
