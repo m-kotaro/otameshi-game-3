@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Space Runner</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #000;
+      color: #eee;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+    #game-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #ui-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #hud {
+      position: absolute;
+      top: 20px; left: 20px; right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    #score-display {
+      font-size: 24px;
+      font-weight: bold;
+      color: #00ffcc;
+      text-shadow: 0 0 10px #00ffcc88;
+    }
+    #timer-display {
+      font-size: 20px;
+      color: #ffd700;
+      text-shadow: 0 0 10px #ffd70088;
+    }
+    #speed-display {
+      position: absolute;
+      bottom: 30px; right: 30px;
+      font-size: 16px;
+      color: #88aaff;
+      text-shadow: 0 0 8px #88aaff66;
+    }
+    #start-screen, #result-screen {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.85);
+      pointer-events: auto;
+      z-index: 20;
+    }
+    #start-screen h1 {
+      font-size: 48px;
+      color: #00ffcc;
+      text-shadow: 0 0 30px #00ffcc88;
+      margin-bottom: 12px;
+    }
+    #start-screen .subtitle {
+      font-size: 16px;
+      color: #aaa;
+      margin-bottom: 40px;
+    }
+    #start-screen .controls-info {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 30px;
+      text-align: center;
+      line-height: 1.8;
+    }
+    .start-btn {
+      padding: 16px 48px;
+      font-size: 20px;
+      border: 2px solid #00ffcc;
+      background: transparent;
+      color: #00ffcc;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s;
+      pointer-events: auto;
+    }
+    .start-btn:hover {
+      background: #00ffcc;
+      color: #000;
+      box-shadow: 0 0 30px #00ffcc88;
+    }
+    #result-screen h2 {
+      font-size: 36px;
+      color: #ffd700;
+      text-shadow: 0 0 20px #ffd70088;
+      margin-bottom: 16px;
+    }
+    #result-screen .final-score {
+      font-size: 60px;
+      font-weight: bold;
+      color: #00ffcc;
+      text-shadow: 0 0 30px #00ffcc88;
+      margin-bottom: 30px;
+    }
+    #result-screen .stats {
+      font-size: 16px;
+      color: #aaa;
+      margin-bottom: 30px;
+      text-align: center;
+      line-height: 2;
+    }
+    .hidden { display: none !important; }
+    #player-info-bar {
+      position: absolute;
+      top: 60px; left: 20px;
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+  <div id="ui-overlay">
+    <div id="hud" class="hidden">
+      <div id="score-display">SCORE: 0</div>
+      <div id="timer-display">60.0s</div>
+    </div>
+    <div id="speed-display" class="hidden">SPEED: 100%</div>
+    <div id="player-info-bar"></div>
+  </div>
+
+  <div id="start-screen">
+    <h1>🚀 3D Space Runner</h1>
+    <div class="subtitle">宇宙空間を駆け抜けろ！隕石を避けてハイスコアを目指せ</div>
+    <div class="controls-info">
+      ← → または A/D : 左右移動<br>
+      ↑ ↓ または W/S : 上下移動<br>
+      隕石を避け続けてスコアを稼ごう！
+    </div>
+    <button class="start-btn" id="btn-start">START</button>
+  </div>
+
+  <div id="result-screen" class="hidden">
+    <h2>GAME OVER</h2>
+    <div class="final-score" id="final-score">0</div>
+    <div class="stats" id="stats"></div>
+    <button class="start-btn" id="btn-retry">RETRY</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // ============================================================
+    // Game Plaza Platform SDK
+    // 外部ゲームがプラットフォームと通信するための共通インターフェース
+    // ============================================================
+
+    const GamePlazaSDK = {
+      players: [],
+      localPlayer: null,
+      gameType: null,
+
+      init(onGameStart) {
+        window.addEventListener('message', (event) => {
+          const data = event.data;
+          if (!data || data.type !== 'game_start') return;
+
+          this.players = data.players || [];
+          this.localPlayer = this.players.find(p => p.isLocal) || null;
+          this.gameType = data.gameType;
+
+          if (onGameStart) {
+            onGameStart({
+              gameType: data.gameType,
+              players: this.players,
+              localPlayer: this.localPlayer,
+            });
+          }
+        });
+      },
+
+      sendResult(winnerId, scores = {}) {
+        window.parent.postMessage({
+          type: 'game_result',
+          winnerId: winnerId,
+          scores: scores,
+        }, '*');
+      },
+
+      sendClose() {
+        window.parent.postMessage({ type: 'game_close' }, '*');
+      },
+    };
+
+    // ============================================================
+    // ゲームロジック: 3D Space Runner
+    // ============================================================
+
+    // --- Game State ---
+    const STATE = {
+      score: 0,
+      timeLeft: 60,
+      speed: 1.0,
+      isPlaying: false,
+      distance: 0,
+      dodged: 0,
+      maxCombo: 0,
+      currentCombo: 0,
+    };
+
+    // --- Three.js Setup ---
+    const canvas = document.getElementById('game-canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000022, 0.008);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 500);
+    camera.position.set(0, 2, 10);
+    camera.lookAt(0, 0, -50);
+
+    // --- Lighting ---
+    const ambientLight = new THREE.AmbientLight(0x222244, 0.5);
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 5);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
+
+    const pointLight1 = new THREE.PointLight(0x00ffcc, 1, 50);
+    pointLight1.position.set(0, 5, -10);
+    scene.add(pointLight1);
+
+    const pointLight2 = new THREE.PointLight(0xff6600, 0.5, 30);
+    pointLight2.position.set(-10, 3, -20);
+    scene.add(pointLight2);
+
+    // --- Starfield ---
+    function createStarfield() {
+      const starsGeometry = new THREE.BufferGeometry();
+      const starCount = 3000;
+      const positions = new Float32Array(starCount * 3);
+      const colors = new Float32Array(starCount * 3);
+
+      for (let i = 0; i < starCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 400;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 400;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 400;
+
+        const color = new THREE.Color();
+        color.setHSL(Math.random() * 0.2 + 0.55, 0.8, 0.6 + Math.random() * 0.4);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+
+      starsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      starsGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const starsMaterial = new THREE.PointsMaterial({
+        size: 0.8,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+      });
+
+      return new THREE.Points(starsGeometry, starsMaterial);
+    }
+
+    const starfield = createStarfield();
+    scene.add(starfield);
+
+    // --- Player Ship ---
+    function createShip() {
+      const group = new THREE.Group();
+
+      // Main body
+      const bodyGeometry = new THREE.ConeGeometry(0.5, 2, 8);
+      const bodyMaterial = new THREE.MeshPhongMaterial({
+        color: 0x00ccff,
+        emissive: 0x003366,
+        shininess: 100,
+        specular: 0xffffff,
+      });
+      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      body.rotation.x = Math.PI / 2;
+      group.add(body);
+
+      // Wings
+      const wingGeometry = new THREE.BoxGeometry(3, 0.1, 0.8);
+      const wingMaterial = new THREE.MeshPhongMaterial({
+        color: 0x0088cc,
+        emissive: 0x002244,
+        shininess: 80,
+      });
+      const wings = new THREE.Mesh(wingGeometry, wingMaterial);
+      wings.position.z = 0.3;
+      group.add(wings);
+
+      // Engine glow
+      const engineGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+      const engineMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffcc,
+        transparent: true,
+        opacity: 0.8,
+      });
+      const engine = new THREE.Mesh(engineGeometry, engineMaterial);
+      engine.position.z = 1.2;
+      engine.name = 'engine';
+      group.add(engine);
+
+      // Engine trail light
+      const engineLight = new THREE.PointLight(0x00ffcc, 2, 8);
+      engineLight.position.z = 1.5;
+      group.add(engineLight);
+
+      group.castShadow = true;
+      return group;
+    }
+
+    const ship = createShip();
+    ship.position.set(0, 0, 0);
+    scene.add(ship);
+
+    // --- Obstacles (Asteroids) ---
+    const obstacles = [];
+    const obstaclePool = [];
+
+    function createAsteroid() {
+      const size = 0.5 + Math.random() * 1.5;
+      const geometry = new THREE.IcosahedronGeometry(size, 1);
+
+      // Deform vertices for irregular shape
+      const positions = geometry.attributes.position;
+      for (let i = 0; i < positions.count; i++) {
+        const x = positions.getX(i);
+        const y = positions.getY(i);
+        const z = positions.getZ(i);
+        const offset = 0.8 + Math.random() * 0.4;
+        positions.setXYZ(i, x * offset, y * offset, z * offset);
+      }
+      geometry.computeVertexNormals();
+
+      const hue = Math.random() * 0.1 + 0.02;
+      const material = new THREE.MeshPhongMaterial({
+        color: new THREE.Color().setHSL(hue, 0.3, 0.3),
+        emissive: new THREE.Color().setHSL(hue, 0.5, 0.05),
+        shininess: 20,
+        flatShading: true,
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.userData = {
+        size,
+        rotSpeed: new THREE.Vector3(
+          (Math.random() - 0.5) * 0.03,
+          (Math.random() - 0.5) * 0.03,
+          (Math.random() - 0.5) * 0.03
+        ),
+      };
+      return mesh;
+    }
+
+    function spawnObstacle() {
+      let asteroid;
+      if (obstaclePool.length > 0) {
+        asteroid = obstaclePool.pop();
+      } else {
+        asteroid = createAsteroid();
+      }
+
+      const laneX = (Math.random() - 0.5) * 16;
+      const laneY = (Math.random() - 0.5) * 10;
+      asteroid.position.set(laneX, laneY, -150 - Math.random() * 50);
+      asteroid.visible = true;
+      scene.add(asteroid);
+      obstacles.push(asteroid);
+    }
+
+    // --- Collectibles (Energy Orbs) ---
+    const collectibles = [];
+
+    function createOrb() {
+      const group = new THREE.Group();
+
+      // Core crystal - larger and more visible
+      const geometry = new THREE.OctahedronGeometry(0.7, 1);
+      const material = new THREE.MeshPhongMaterial({
+        color: 0x00ff88,
+        emissive: 0x00ff44,
+        emissiveIntensity: 0.8,
+        transparent: true,
+        opacity: 0.95,
+        shininess: 150,
+      });
+      const core = new THREE.Mesh(geometry, material);
+      group.add(core);
+
+      // Inner glow sphere
+      const glowGeometry = new THREE.SphereGeometry(1.0, 16, 16);
+      const glowMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffaa,
+        transparent: true,
+        opacity: 0.25,
+      });
+      const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+      group.add(glow);
+
+      // Outer pulse ring
+      const ringGeometry = new THREE.TorusGeometry(1.3, 0.08, 8, 24);
+      const ringMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffcc,
+        transparent: true,
+        opacity: 0.5,
+      });
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      ring.name = 'orb-ring';
+      group.add(ring);
+
+      // Point light to make it stand out
+      const orbLight = new THREE.PointLight(0x00ff88, 2, 8);
+      group.add(orbLight);
+
+      return group;
+    }
+
+    function spawnCollectible() {
+      const orb = createOrb();
+      const laneX = (Math.random() - 0.5) * 12;
+      const laneY = (Math.random() - 0.5) * 6;
+      orb.position.set(laneX, laneY, -140 - Math.random() * 40);
+      scene.add(orb);
+      collectibles.push(orb);
+    }
+
+    // --- Particle Effects ---
+    const explosionParticles = [];
+
+    function createExplosion(position, color) {
+      const particleCount = 20;
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = position.x;
+        positions[i * 3 + 1] = position.y;
+        positions[i * 3 + 2] = position.z;
+        velocities.push(new THREE.Vector3(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
+        ));
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+      const material = new THREE.PointsMaterial({
+        color: color || 0xff6600,
+        size: 0.4,
+        transparent: true,
+        opacity: 1.0,
+      });
+
+      const points = new THREE.Points(geometry, material);
+      points.userData = { velocities, life: 1.0 };
+      scene.add(points);
+      explosionParticles.push(points);
+    }
+
+    // --- Speed Lines ---
+    const speedLines = [];
+
+    function createSpeedLines() {
+      for (let i = 0; i < 50; i++) {
+        const geometry = new THREE.BufferGeometry();
+        const y = (Math.random() - 0.5) * 20;
+        const x = (Math.random() - 0.5) * 30;
+        const z = -Math.random() * 100;
+        const length = 2 + Math.random() * 4;
+
+        const positions = new Float32Array([x, y, z, x, y, z + length]);
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+        const material = new THREE.LineBasicMaterial({
+          color: 0x4488ff,
+          transparent: true,
+          opacity: 0.3 + Math.random() * 0.3,
+        });
+
+        const line = new THREE.Line(geometry, material);
+        scene.add(line);
+        speedLines.push({ line, baseZ: z, length });
+      }
+    }
+
+    createSpeedLines();
+
+    // --- Tunnel Rings ---
+    function createTunnelRings() {
+      for (let i = 0; i < 8; i++) {
+        const geometry = new THREE.TorusGeometry(12, 0.1, 8, 32);
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x0044aa,
+          transparent: true,
+          opacity: 0.15,
+        });
+        const ring = new THREE.Mesh(geometry, material);
+        ring.position.z = -20 * i - 20;
+        ring.name = 'tunnel-ring';
+        scene.add(ring);
+      }
+    }
+
+    createTunnelRings();
+
+    // --- Input ---
+    const input = { left: false, right: false, up: false, down: false };
+    const shipTarget = { x: 0, y: 0 };
+
+    document.addEventListener('keydown', (e) => {
+      switch (e.key) {
+        case 'ArrowLeft': case 'a': case 'A': input.left = true; break;
+        case 'ArrowRight': case 'd': case 'D': input.right = true; break;
+        case 'ArrowUp': case 'w': case 'W': input.up = true; break;
+        case 'ArrowDown': case 's': case 'S': input.down = true; break;
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      switch (e.key) {
+        case 'ArrowLeft': case 'a': case 'A': input.left = false; break;
+        case 'ArrowRight': case 'd': case 'D': input.right = false; break;
+        case 'ArrowUp': case 'w': case 'W': input.up = false; break;
+        case 'ArrowDown': case 's': case 'S': input.down = false; break;
+      }
+    });
+
+    // Touch / Mouse controls
+    let touchActive = false;
+    let touchX = 0, touchY = 0;
+
+    canvas.addEventListener('touchstart', (e) => {
+      touchActive = true;
+      const t = e.touches[0];
+      touchX = (t.clientX / window.innerWidth) * 2 - 1;
+      touchY = -(t.clientY / window.innerHeight) * 2 + 1;
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      touchX = (t.clientX / window.innerWidth) * 2 - 1;
+      touchY = -(t.clientY / window.innerHeight) * 2 + 1;
+    });
+
+    canvas.addEventListener('touchend', () => { touchActive = false; });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (STATE.isPlaying) {
+        touchX = (e.clientX / window.innerWidth) * 2 - 1;
+        touchY = -(e.clientY / window.innerHeight) * 2 + 1;
+        touchActive = true;
+      }
+    });
+
+    // --- Game Logic ---
+    let lastTime = 0;
+    let spawnTimer = 0;
+    let orbSpawnTimer = 0;
+    let gameTimer = 0;
+
+    function startGame() {
+      STATE.score = 0;
+      STATE.timeLeft = 60;
+      STATE.speed = 1.0;
+      STATE.isPlaying = true;
+      STATE.distance = 0;
+      STATE.dodged = 0;
+      STATE.maxCombo = 0;
+      STATE.currentCombo = 0;
+
+      ship.position.set(0, 0, 0);
+      shipTarget.x = 0;
+      shipTarget.y = 0;
+
+      // Clear obstacles
+      obstacles.forEach(o => { scene.remove(o); obstaclePool.push(o); });
+      obstacles.length = 0;
+      collectibles.forEach(c => scene.remove(c));
+      collectibles.length = 0;
+      explosionParticles.forEach(p => scene.remove(p));
+      explosionParticles.length = 0;
+
+      document.getElementById('start-screen').classList.add('hidden');
+      document.getElementById('result-screen').classList.add('hidden');
+      document.getElementById('hud').classList.remove('hidden');
+      document.getElementById('speed-display').classList.remove('hidden');
+
+      lastTime = performance.now();
+      spawnTimer = 0;
+      orbSpawnTimer = 0;
+      gameTimer = 0;
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function endGame() {
+      STATE.isPlaying = false;
+
+      document.getElementById('hud').classList.add('hidden');
+      document.getElementById('speed-display').classList.add('hidden');
+      document.getElementById('result-screen').classList.remove('hidden');
+      document.getElementById('final-score').textContent = STATE.score;
+      document.getElementById('stats').innerHTML =
+        `距離: ${Math.floor(STATE.distance)}m<br>` +
+        `避けた隕石: ${STATE.dodged}個<br>` +
+        `最大コンボ: ${STATE.maxCombo}x<br>` +
+        `最高速度: ${Math.floor(STATE.speed * 100)}%`;
+
+      // Send result to platform
+      const winnerId = GamePlazaSDK.localPlayer?.uuid || null;
+      GamePlazaSDK.sendResult(winnerId, { score: STATE.score });
+    }
+
+    function gameLoop(timestamp) {
+      if (!STATE.isPlaying) return;
+
+      const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+      lastTime = timestamp;
+
+      // Update timer
+      STATE.timeLeft -= dt;
+      if (STATE.timeLeft <= 0) {
+        STATE.timeLeft = 0;
+        endGame();
+        return;
+      }
+
+      // Increase speed over time
+      STATE.speed = 1.0 + (60 - STATE.timeLeft) * 0.025;
+      const moveSpeed = 30 * STATE.speed;
+
+      // Update distance & score
+      STATE.distance += moveSpeed * dt;
+      STATE.score += Math.floor(STATE.speed * 10 * dt);
+
+      // Spawn obstacles
+      spawnTimer += dt;
+      const spawnInterval = Math.max(0.3, 1.0 - STATE.speed * 0.1);
+      if (spawnTimer > spawnInterval) {
+        spawnTimer = 0;
+        spawnObstacle();
+        if (Math.random() < 0.3) spawnObstacle(); // Extra spawn chance
+      }
+
+      // Spawn collectibles
+      orbSpawnTimer += dt;
+      if (orbSpawnTimer > 2.0) {
+        orbSpawnTimer = 0;
+        if (Math.random() < 0.5) spawnCollectible();
+      }
+
+      // Input handling
+      const shipMoveSpeed = 12;
+      if (input.left) shipTarget.x -= shipMoveSpeed * dt;
+      if (input.right) shipTarget.x += shipMoveSpeed * dt;
+      if (input.up) shipTarget.y += shipMoveSpeed * dt;
+      if (input.down) shipTarget.y -= shipMoveSpeed * dt;
+
+      if (touchActive) {
+        shipTarget.x = touchX * 8;
+        shipTarget.y = touchY * 5;
+      }
+
+      // Clamp ship position
+      shipTarget.x = Math.max(-8, Math.min(8, shipTarget.x));
+      shipTarget.y = Math.max(-5, Math.min(5, shipTarget.y));
+
+      // Smooth ship movement
+      ship.position.x += (shipTarget.x - ship.position.x) * 8 * dt;
+      ship.position.y += (shipTarget.y - ship.position.y) * 8 * dt;
+
+      // Ship tilt based on movement
+      ship.rotation.z = -(shipTarget.x - ship.position.x) * 0.5;
+      ship.rotation.x = (shipTarget.y - ship.position.y) * 0.3;
+
+      // Update engine glow
+      const engine = ship.getObjectByName('engine');
+      if (engine) {
+        engine.scale.setScalar(0.8 + Math.sin(timestamp * 0.01) * 0.3);
+      }
+
+      // Update obstacles
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.position.z += moveSpeed * dt;
+        obs.rotation.x += obs.userData.rotSpeed.x;
+        obs.rotation.y += obs.userData.rotSpeed.y;
+        obs.rotation.z += obs.userData.rotSpeed.z;
+
+        // Remove if passed player
+        if (obs.position.z > 15) {
+          scene.remove(obs);
+          obstaclePool.push(obs);
+          obstacles.splice(i, 1);
+          STATE.dodged++;
+          STATE.currentCombo++;
+          STATE.maxCombo = Math.max(STATE.maxCombo, STATE.currentCombo);
+          // Combo bonus
+          if (STATE.currentCombo % 10 === 0) {
+            STATE.score += STATE.currentCombo * 5;
+          }
+          continue;
+        }
+
+        // Collision detection
+        const dx = obs.position.x - ship.position.x;
+        const dy = obs.position.y - ship.position.y;
+        const dz = obs.position.z - ship.position.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const hitRadius = obs.userData.size * 0.7 + 0.8;
+
+        if (dist < hitRadius) {
+          createExplosion(obs.position.clone(), 0xff4400);
+          scene.remove(obs);
+          obstaclePool.push(obs);
+          obstacles.splice(i, 1);
+          STATE.currentCombo = 0;
+          STATE.timeLeft -= 3; // Penalty: lose 3 seconds
+          // Screen shake effect
+          camera.position.x = (Math.random() - 0.5) * 0.5;
+          camera.position.y = 2 + (Math.random() - 0.5) * 0.5;
+          setTimeout(() => {
+            camera.position.x = 0;
+            camera.position.y = 2;
+          }, 100);
+        }
+      }
+
+      // Update collectibles
+      for (let i = collectibles.length - 1; i >= 0; i--) {
+        const orb = collectibles[i];
+        orb.position.z += moveSpeed * dt;
+        orb.rotation.y += 0.08;
+        orb.rotation.x += 0.04;
+
+        // Pulse animation for ring
+        const ring = orb.getObjectByName('orb-ring');
+        if (ring) {
+          ring.rotation.x += 0.05;
+          ring.rotation.z += 0.03;
+          const pulse = 1 + Math.sin(timestamp * 0.005 + i) * 0.2;
+          ring.scale.setScalar(pulse);
+        }
+
+        if (orb.position.z > 15) {
+          scene.remove(orb);
+          collectibles.splice(i, 1);
+          continue;
+        }
+
+        // Collection detection (generous radius)
+        const dx = orb.position.x - ship.position.x;
+        const dy = orb.position.y - ship.position.y;
+        const dz = orb.position.z - ship.position.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < 2.5) {
+          createExplosion(orb.position.clone(), 0x00ff88);
+          scene.remove(orb);
+          collectibles.splice(i, 1);
+          STATE.score += 100;
+          STATE.timeLeft = Math.min(60, STATE.timeLeft + 1); // Time bonus
+        }
+      }
+
+      // Update explosion particles
+      for (let i = explosionParticles.length - 1; i >= 0; i--) {
+        const p = explosionParticles[i];
+        p.userData.life -= dt * 2;
+
+        if (p.userData.life <= 0) {
+          scene.remove(p);
+          explosionParticles.splice(i, 1);
+          continue;
+        }
+
+        p.material.opacity = p.userData.life;
+        const positions = p.geometry.attributes.position;
+        for (let j = 0; j < positions.count; j++) {
+          positions.setX(j, positions.getX(j) + p.userData.velocities[j].x * dt * 5);
+          positions.setY(j, positions.getY(j) + p.userData.velocities[j].y * dt * 5);
+          positions.setZ(j, positions.getZ(j) + p.userData.velocities[j].z * dt * 5);
+        }
+        positions.needsUpdate = true;
+      }
+
+      // Update speed lines
+      speedLines.forEach(sl => {
+        const posAttr = sl.line.geometry.attributes.position;
+        let z1 = posAttr.getZ(0) + moveSpeed * dt;
+        let z2 = posAttr.getZ(1) + moveSpeed * dt;
+        if (z1 > 20) {
+          z1 = sl.baseZ;
+          z2 = sl.baseZ + sl.length;
+        }
+        posAttr.setZ(0, z1);
+        posAttr.setZ(1, z2);
+        posAttr.needsUpdate = true;
+        sl.line.material.opacity = Math.min(0.6, STATE.speed * 0.2);
+      });
+
+      // Update tunnel rings
+      scene.children.forEach(child => {
+        if (child.name === 'tunnel-ring') {
+          child.position.z += moveSpeed * dt;
+          if (child.position.z > 10) {
+            child.position.z -= 160;
+          }
+          child.rotation.z += 0.005 * STATE.speed;
+        }
+      });
+
+      // Rotate starfield slowly
+      starfield.rotation.z += 0.0001 * STATE.speed;
+
+      // Update point lights for dynamic feel
+      pointLight1.position.x = Math.sin(timestamp * 0.001) * 5;
+      pointLight2.position.x = Math.cos(timestamp * 0.0008) * 8;
+
+      // Update HUD
+      document.getElementById('score-display').textContent = `SCORE: ${STATE.score}`;
+      document.getElementById('timer-display').textContent = `${STATE.timeLeft.toFixed(1)}s`;
+      document.getElementById('timer-display').style.color =
+        STATE.timeLeft < 10 ? '#ff4444' : '#ffd700';
+      document.getElementById('speed-display').textContent =
+        `SPEED: ${Math.floor(STATE.speed * 100)}%`;
+
+      // Render
+      renderer.render(scene, camera);
+      requestAnimationFrame(gameLoop);
+    }
+
+    // --- Background render loop (when not playing) ---
+    function idleLoop() {
+      if (STATE.isPlaying) return;
+      starfield.rotation.z += 0.0002;
+      starfield.rotation.y += 0.0001;
+      renderer.render(scene, camera);
+      requestAnimationFrame(idleLoop);
+    }
+    idleLoop();
+
+    // --- Event Bindings ---
+    document.getElementById('btn-start').addEventListener('click', startGame);
+    document.getElementById('btn-retry').addEventListener('click', startGame);
+
+    // --- Resize ---
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Platform SDK Init ---
+    GamePlazaSDK.init(({ gameType, players, localPlayer }) => {
+      const names = players.map(p => p.userName || p.uuid.slice(0, 8)).join(', ');
+      document.getElementById('player-info-bar').textContent =
+        `${gameType} | ${names}`;
+    });
+  </script>
+</body>
+</html>
